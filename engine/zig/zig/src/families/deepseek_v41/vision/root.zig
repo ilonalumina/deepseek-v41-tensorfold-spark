@@ -25,4 +25,5 @@ test {
     _ = @import("golden_test.zig");
     _ = @import("fetch_test.zig");
     _ = @import("webp_golden_test.zig");
+    _ = @import("webp_vp8l_budget_test.zig");
 }

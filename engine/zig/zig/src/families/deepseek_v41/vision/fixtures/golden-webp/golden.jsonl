@@ -1,3 +1,4 @@
+{"generator": {"pillow": "12.3.0", "libwebp": "1.6.0"}}
 {"name": "lossy.webp", "size": [37, 23], "rgb_sha256": "c34c1233c5f93e39b8f5c0d900778a7ed51d4d0980aee922c43a8898d1dbedf0"}
 {"name": "lossy-q1.webp", "size": [37, 23], "rgb_sha256": "e027b3c5747444ba5c46e5d470df89a89869f4d72e04362cfaf4e1cb8f7e281e"}
 {"name": "lossy-q50.webp", "size": [37, 23], "rgb_sha256": "ffefdd656bc81fd63365d44582be36ddbea979aca7ff8b82a51fda72b0e27e4c"}

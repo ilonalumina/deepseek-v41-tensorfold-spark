@@ -5,9 +5,13 @@ const xform = @import("webp_vp8l_xform.zig");
 const Allocator = std.mem.Allocator;
 const BitReader = huff.BitReader;
 const Code = huff.Code;
+const Tables = huff.Tables;
 const Transform = xform.Transform;
 
-pub const Error = error{ BadWebp, TooManyPixels } || Allocator.Error;
+pub const Error = error{ BadWebp, TooManyPixels, TooLarge } || Allocator.Error;
+
+/// The most a stream's groups and tables may take (``error.TooLarge`` past it); the pixel limit does not bound them.
+pub const max_table_bytes: usize = 64 << 20;
 
 /// A decoded image in libwebp's ARGB (``a << 24 | r << 16 | g << 8 | b``), ``w * h`` pixels row by row.
 pub const Argb = struct {
@@ -21,22 +25,22 @@ pub const Argb = struct {
     }
 };
 
-const len_code_limit = 256 + 24;
+pub const len_code_limit = 256 + 24;
 const green = 0;
 const red = 1;
 const blue = 2;
 const alpha = 3;
 const dist = 4;
 const alphabet_size = [5]u32{ len_code_limit, 256, 256, 256, 40 };
-const code_length_order = [19]u8{ 17, 18, 0, 1, 2, 3, 4, 5, 16, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 };
+pub const code_length_order = [19]u8{ 17, 18, 0, 1, 2, 3, 4, 5, 16, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 };
 const packed_size = 64;
 const special_marker = 0x100;
 
 const Code32 = struct { bits: u32 = 0, value: u32 = 0 };
 
-/// ``HTreeGroup``: five codes (offsets into the tables) and the trivial-literal / packed-table shortcuts.
+/// ``HTreeGroup``: five codes (tables in ``Tables``) and the trivial-literal / packed-table shortcuts.
 const Group = struct {
-    htrees: [5]usize = @splat(0),
+    htrees: [5][]const Code = @splat(&.{}),
     is_trivial_literal: bool = false,
     literal_arb: u32 = 0,
     is_trivial_code: bool = false,
@@ -53,7 +57,7 @@ const Meta = struct {
     xsize: u32 = 0,
     image: []u32 = &.{},
     groups: []Group = &.{},
-    tables: std.ArrayList(Code) = .empty,
+    tables: Tables = .{},
 
     fn deinit(m: *Meta, gpa: Allocator) void {
         gpa.free(m.cache);
@@ -66,10 +70,6 @@ const Meta = struct {
     fn group(m: *const Meta, x: u32, y: u32) *const Group {
         if (m.bits == 0) return &m.groups[0];
         return &m.groups[m.image[@as(usize, m.xsize) * (y >> m.bits) + (x >> m.bits)]];
-    }
-
-    fn tree(m: *const Meta, g: *const Group, i: usize) []const Code {
-        return m.tables.items[g.htrees[i]..];
     }
 
     fn cacheInsert(m: *Meta, argb: u32) void {
@@ -85,6 +85,8 @@ const Decoder = struct {
     seen: u4 = 0,
     width: u32 = 0,
     height: u32 = 0,
+    /// Bytes of ``max_table_bytes`` not yet taken by groups or table capacity (never given back).
+    table_budget: usize = max_table_bytes,
 
     fn deinit(d: *Decoder) void {
         for (d.transforms[0..d.next]) |t| d.gpa.free(t.data);
@@ -127,8 +129,8 @@ const Decoder = struct {
         }
     }
 
-    /// ``ReadHuffmanCode``: one code (simple or length-coded); its table appended to ``tables`` when given.
-    fn readCode(d: *Decoder, size: u32, lengths: []u8, tables: ?*std.ArrayList(Code)) Error!u32 {
+    /// ``ReadHuffmanCode``: one code (simple or length-coded), its table built in ``tables`` when given (else empty).
+    fn readCode(d: *Decoder, size: u32, lengths: []u8, tables: ?*Tables) Error![]const Code {
         const br = &d.br;
         @memset(lengths[0..size], 0);
         if (br.readBits(1) != 0) {
@@ -143,9 +145,12 @@ const Decoder = struct {
             try d.readCodeLengths(&cl, size, lengths);
         }
         if (br.eos) return error.BadWebp;
-        const n = try huff.build(d.gpa, tables, huff.table_bits, lengths[0..size]);
+        const n = huff.size(huff.table_bits, lengths[0..size]);
         if (n == 0) return error.BadWebp;
-        return n;
+        const t = tables orelse return &.{};
+        const table = try t.take(d.gpa, n, &d.table_budget);
+        huff.fill(table, huff.table_bits, lengths[0..size]);
+        return table;
     }
 
     /// ``ReadHuffmanCodesHelper``: every group's five codes; unused groups (``mapping`` -1) are only checked.
@@ -153,6 +158,9 @@ const Decoder = struct {
         const cache_size: u32 = if (cache_bits > 0) @as(u32, 1) << cache_bits else 0;
         const lengths = try d.gpa.alloc(u8, len_code_limit + cache_size);
         defer d.gpa.free(lengths);
+        const group_bytes = @as(usize, num_groups) * @sizeOf(Group);
+        if (group_bytes > d.table_budget) return error.TooLarge;
+        d.table_budget -= group_bytes;
         m.groups = try d.gpa.alloc(Group, num_groups);
         @memset(m.groups, .{});
         for (0..num_max) |i| {
@@ -166,27 +174,26 @@ const Decoder = struct {
             var max_bits: u32 = 0;
             for (alphabet_size, 0..) |a, j| {
                 const size = a + (if (j == 0) cache_size else 0);
-                g.htrees[j] = m.tables.items.len;
-                _ = try d.readCode(size, lengths, &m.tables);
-                const first = m.tables.items[g.htrees[j]];
+                g.htrees[j] = try d.readCode(size, lengths, &m.tables);
+                const first = g.htrees[j][0];
                 if (trivial_literal and j >= red and j <= alpha) trivial_literal = first.bits == 0;
                 total_size += first.bits;
                 if (j <= alpha) max_bits += std.mem.max(u8, lengths[0..size]);
             }
             g.is_trivial_literal = trivial_literal;
             if (trivial_literal) {
-                const r: u32 = m.tables.items[g.htrees[red]].value;
-                const b: u32 = m.tables.items[g.htrees[blue]].value;
-                const a: u32 = m.tables.items[g.htrees[alpha]].value;
+                const r: u32 = g.htrees[red][0].value;
+                const b: u32 = g.htrees[blue][0].value;
+                const a: u32 = g.htrees[alpha][0].value;
                 g.literal_arb = (a << 24) | (r << 16) | b;
-                const gv: u32 = m.tables.items[g.htrees[green]].value;
+                const gv: u32 = g.htrees[green][0].value;
                 if (total_size == 0 and gv < 256) {
                     g.is_trivial_code = true;
                     g.literal_arb |= gv << 8;
                 }
             }
             g.use_packed_table = !g.is_trivial_code and max_bits < 6;
-            if (g.use_packed_table) buildPacked(m, g);
+            if (g.use_packed_table) buildPacked(g);
         }
     }
 
@@ -314,23 +321,23 @@ const Decoder = struct {
                     code = readPacked(g, br, &data[src]);
                     if (br.isEnd()) break :outer;
                     if (code == 0) break :one;
-                } else code = huff.readSymbol(m.tree(g, green), br);
+                } else code = huff.readSymbol(g.htrees[green], br);
                 if (br.isEnd()) break :outer;
                 if (code < 256) {
                     if (g.is_trivial_literal) {
                         data[src] = g.literal_arb | (code << 8);
                     } else {
-                        const r = huff.readSymbol(m.tree(g, red), br);
+                        const r = huff.readSymbol(g.htrees[red], br);
                         br.fill();
-                        const b = huff.readSymbol(m.tree(g, blue), br);
-                        const a = huff.readSymbol(m.tree(g, alpha), br);
+                        const b = huff.readSymbol(g.htrees[blue], br);
+                        const a = huff.readSymbol(g.htrees[alpha], br);
                         if (br.isEnd()) break :outer;
                         data[src] = (a << 24) | (r << 16) | (code << 8) | b;
                     }
                     break :one;
                 } else if (code < len_code_limit) {
                     const length = huff.copyDistance(code - 256, br);
-                    const dist_symbol = huff.readSymbol(m.tree(g, dist), br);
+                    const dist_symbol = huff.readSymbol(g.htrees[dist], br);
                     br.fill();
                     const distance = huff.planeCodeToDistance(width, huff.copyDistance(dist_symbol, br));
                     if (br.isEnd()) break :outer;
@@ -377,7 +384,7 @@ const Decoder = struct {
         while (!br.eos and pos < data.len) {
             if (col & m.mask == 0) g = m.group(col, row);
             br.fill();
-            const code = huff.readSymbol(m.tree(g, green), br);
+            const code = huff.readSymbol(g.htrees[green], br);
             if (code < 256) {
                 data[pos] = @intCast(code);
                 pos += 1;
@@ -388,7 +395,7 @@ const Decoder = struct {
                 }
             } else if (code < len_code_limit) {
                 const length = huff.copyDistance(code - 256, br);
-                const dist_symbol = huff.readSymbol(m.tree(g, dist), br);
+                const dist_symbol = huff.readSymbol(g.htrees[dist], br);
                 br.fill();
                 const distance = huff.planeCodeToDistance(width, huff.copyDistance(dist_symbol, br));
                 if (pos < distance or data.len - pos < length) return error.BadWebp;
@@ -443,17 +450,17 @@ fn readPacked(g: *const Group, br: *BitReader, dst: *u32) u32 {
     return code.value;
 }
 
-fn buildPacked(m: *const Meta, g: *Group) void {
+fn buildPacked(g: *Group) void {
     for (&g.packed_table, 0..) |*h, code| {
         var bits: u32 = @intCast(code);
-        const hcode = m.tree(g, green)[bits];
+        const hcode = g.htrees[green][bits];
         if (hcode.value >= 256) {
             h.* = .{ .bits = @as(u32, hcode.bits) + special_marker, .value = hcode.value };
             continue;
         }
         h.* = .{};
         for ([4]usize{ green, red, blue, alpha }, [4]u5{ 8, 16, 0, 24 }) |tr, shift| {
-            const c = m.tree(g, tr)[bits];
+            const c = g.htrees[tr][bits];
             h.bits += c.bits;
             h.value |= @as(u32, c.value) << shift;
             bits >>= @intCast(c.bits);
@@ -465,7 +472,7 @@ fn buildPacked(m: *const Meta, g: *Group) void {
 fn is8bOptimizable(m: *const Meta) bool {
     if (m.cache.len > 0) return false;
     for (m.groups) |*g| {
-        inline for (.{ red, blue, alpha }) |tr| if (m.tree(g, tr)[0].bits > 0) return false;
+        inline for (.{ red, blue, alpha }) |tr| if (g.htrees[tr][0].bits > 0) return false;
     }
     return true;
 }

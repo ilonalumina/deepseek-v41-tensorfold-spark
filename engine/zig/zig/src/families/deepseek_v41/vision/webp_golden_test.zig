@@ -5,8 +5,11 @@ const decode = @import("decode.zig");
 
 const fixtures = "zig/src/families/deepseek_v41/vision/fixtures/golden-webp";
 
-/// A file Pillow decodes (``size``, ``rgb_sha256``) or refuses (``refused``).
-const Rec = struct { name: []const u8, size: [2]u32 = .{ 0, 0 }, rgb_sha256: []const u8 = "", refused: bool = false };
+/// The first record: the Pillow and libwebp versions the goldens came from.
+const Generator = struct { pillow: []const u8, libwebp: []const u8 };
+
+/// A file Pillow decodes (``size``, ``rgb_sha256``) or refuses (``refused``); or the ``generator`` record.
+const Rec = struct { name: []const u8 = "", size: [2]u32 = .{ 0, 0 }, rgb_sha256: []const u8 = "", refused: bool = false, generator: ?Generator = null };
 
 /// Every record of ``dir``/golden.jsonl; returns (equal, total).
 fn run(dir: []const u8) ![2]usize {
@@ -20,8 +23,12 @@ fn run(dir: []const u8) ![2]usize {
     var total: usize = 0;
     var it = std.mem.tokenizeScalar(u8, lines, '\n');
     while (it.next()) |line| {
-        total += 1;
         const r = try std.json.parseFromSliceLeaky(Rec, ar, line, .{});
+        if (r.generator) |g| {
+            std.debug.print("webp golden {s}: Pillow {s}, libwebp {s}\n", .{ dir, g.pillow, g.libwebp });
+            continue;
+        }
+        total += 1;
         const raw = try cwd.readFileAlloc(testing.io, try std.fmt.allocPrint(ar, "{s}/{s}", .{ dir, r.name }), ar, .limited(1 << 28));
         var which: []const u8 = "";
         var rgb = decode.rgb(a, raw, 1 << 32, &which) catch |e| {

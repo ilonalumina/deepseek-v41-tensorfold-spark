@@ -140,7 +140,7 @@ def images(full: bool):
     return out
 
 
-# vision_prep.to_rgb's rule; OUT/golden.jsonl holds {name, size, rgb_sha256}, or {name, refused} where Pillow refuses
+# vision_prep.to_rgb's rule; golden.jsonl: {generator}, then {name, size, rgb_sha256} or {name, refused} per file
 def variants(files: dict[str, bytes]) -> list[tuple[str, bytes]]:
     """Container variants of committed files: the demuxer's refusals, and a still image whose ALPH the demuxer drops."""
     out = []
@@ -177,8 +177,13 @@ def to_rgb(img):
 
 
 def main() -> int:
-    """Write the files and golden.jsonl."""
-    from PIL import Image
+    """Write the files and golden.jsonl (refused unless Pillow is 12.3 with libwebp 1.6.0, the versions ported)."""
+    import PIL
+    from PIL import Image, features
+
+    pillow, libwebp = PIL.__version__, features.version("webp")
+    if not pillow.startswith("12.3.") or libwebp != "1.6.0":
+        raise SystemExit(f"the goldens are Pillow 12.3 with libwebp 1.6.0; this is Pillow {pillow} with libwebp {libwebp}")
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
@@ -187,6 +192,7 @@ def main() -> int:
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     with open(out / "golden.jsonl", "w") as g:
+        g.write(json.dumps({"generator": {"pillow": pillow, "libwebp": libwebp}}) + "\n")
         for name, raw in images(a.full):
             (out / name).write_bytes(raw)
             try:

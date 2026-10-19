@@ -3,7 +3,7 @@ const std = @import("std");
 const vp8l = @import("webp_vp8l.zig");
 const Allocator = std.mem.Allocator;
 
-pub const Error = error{ BadWebp, TooManyPixels } || Allocator.Error;
+pub const Error = error{ BadWebp, TooManyPixels, TooLarge } || Allocator.Error;
 
 const Filter = enum(u2) { none, horizontal, vertical, gradient };
 

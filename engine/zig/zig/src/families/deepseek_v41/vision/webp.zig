@@ -8,7 +8,9 @@ const alpha = @import("webp_alpha.zig");
 const demux = @import("webp_demux.zig");
 const Allocator = std.mem.Allocator;
 
-pub const Error = error{ BadWebp, TooManyPixels } || Allocator.Error;
+pub const Error = error{ BadWebp, TooManyPixels, TooLarge } || Allocator.Error;
+
+pub const max_table_bytes = vp8l.max_table_bytes;
 
 /// Pillow's ``_accept``: RIFF, WEBP, then a VP8, VP8L or VP8X chunk.
 pub fn isWebp(raw: []const u8) bool {
@@ -41,7 +43,7 @@ fn firstFrame(raw: []const u8, f: demux.Frame) Frame {
     return .{ .x = f.x, .y = f.y, .w = f.w, .h = f.h, .lossless = lossless, .image = img[8..], .alph = alph };
 }
 
-/// The first frame's RGBA pixels, written into ``canvas`` (stride ``cw`` pixels) at the frame's offset.
+/// The first frame's RGBA in ``canvas`` (stride ``cw``) at its offset; a full-canvas lossy frame decodes straight in.
 fn decodeFrame(gpa: Allocator, f: Frame, canvas: []u8, cw: u32, max_pixels: u64) Error!void {
     const stride = @as(usize, cw) * 4;
     const at = @as(usize, f.y) * stride + @as(usize, f.x) * 4;
@@ -58,20 +60,24 @@ fn decodeFrame(gpa: Allocator, f: Frame, canvas: []u8, cw: u32, max_pixels: u64)
         }
         return;
     }
-    var planes = try vp8.decode(gpa, f.image, max_pixels);
-    defer planes.deinit(gpa);
-    if (planes.w != f.w or planes.h != f.h) return error.BadWebp;
     const n = @as(usize, f.w) * f.h;
-    const rgba = try gpa.alloc(u8, n * 4);
-    defer gpa.free(rgba);
-    @memset(rgba, 255);
-    yuv.toRgba(&planes, rgba);
+    const full = f.x == 0 and f.y == 0 and f.w == cw and n * 4 == canvas.len;
+    const rgba = if (full) canvas else try gpa.alloc(u8, n * 4);
+    defer if (!full) gpa.free(rgba);
+    {
+        var planes = try vp8.decode(gpa, f.image, max_pixels);
+        defer planes.deinit(gpa);
+        if (planes.w != f.w or planes.h != f.h) return error.BadWebp;
+        @memset(rgba, 255);
+        yuv.toRgba(&planes, rgba);
+    }
     if (f.alph) |a| {
         const plane = try gpa.alloc(u8, n);
         defer gpa.free(plane);
         try alpha.decode(gpa, a, f.w, f.h, plane);
         for (plane, 0..) |v, i| rgba[i * 4 + 3] = v;
     }
+    if (full) return;
     const rs = @as(usize, f.w) * 4;
     for (0..f.h) |y| @memcpy(canvas[at + y * stride ..][0..rs], rgba[y * rs ..][0..rs]);
 }
@@ -84,14 +90,15 @@ pub fn decode(gpa: Allocator, raw: []const u8, max_pixels: u64) Error!pixels.Ima
     const f = firstFrame(raw, d.first);
     const n = @as(u64, d.canvas_w) * d.canvas_h;
     if (n > max_pixels or @as(u64, f.w) * f.h > max_pixels) return error.TooManyPixels;
-    const canvas = try gpa.alloc(u8, @intCast(n * 4));
-    defer gpa.free(canvas);
+    const np: usize = @intCast(n);
+    const canvas = try gpa.alloc(u8, np * 4);
+    errdefer gpa.free(canvas);
     @memset(canvas, 0);
     try decodeFrame(gpa, f, canvas, d.canvas_w, max_pixels);
-    if (feat.has_alpha) return .{ .w = d.canvas_w, .h = d.canvas_h, .mode = .rgba, .data = try gpa.dupe(u8, canvas) };
-    const out = try gpa.alloc(u8, @intCast(n * 3));
-    for (0..@intCast(n)) |i| out[i * 3 ..][0..3].* = canvas[i * 4 ..][0..3].*;
-    return .{ .w = d.canvas_w, .h = d.canvas_h, .mode = .rgb, .data = out };
+    if (feat.has_alpha) return .{ .w = d.canvas_w, .h = d.canvas_h, .mode = .rgba, .data = canvas };
+    // RGB in place: pixel i's three bytes move down to i * 3, which never passes pixel i's own bytes at i * 4
+    for (0..np) |i| std.mem.copyForwards(u8, canvas[i * 3 ..][0..3], canvas[i * 4 ..][0..3]);
+    return .{ .w = d.canvas_w, .h = d.canvas_h, .mode = .rgb, .data = try gpa.realloc(canvas, np * 3) };
 }
 
 test {

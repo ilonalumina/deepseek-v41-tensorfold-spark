@@ -237,17 +237,61 @@ fn buildTable(root: ?[]Code, root_bits: u32, lengths: []const u8, sorted: []u16)
     return total;
 }
 
-/// ``VP8LBuildHuffmanTable``: sizes and checks the code, then (``out`` set) appends its table to ``out``.
-pub fn build(gpa: std.mem.Allocator, out: ?*std.ArrayList(Code), root_bits: u32, lengths: []const u8) !u32 {
+/// ``VP8LBuildHuffmanTable``'s sizing pass: the code's table size, 0 for a bad code.
+pub fn size(root_bits: u32, lengths: []const u8) u32 {
     var sorted: [max_alphabet]u16 = undefined;
-    const total = buildTable(null, root_bits, lengths, &sorted);
-    const list = out orelse return total;
-    if (total == 0) return 0;
-    const t = try list.addManyAsSlice(gpa, total);
-    @memset(t, .{});
-    _ = buildTable(t, root_bits, lengths, &sorted);
-    return total;
+    return buildTable(null, root_bits, lengths, &sorted);
 }
+
+/// ``VP8LBuildHuffmanTable`` into ``table``, of the ``size`` the same code gave.
+pub fn fill(table: []Code, root_bits: u32, lengths: []const u8) void {
+    var sorted: [max_alphabet]u16 = undefined;
+    @memset(table, .{});
+    std.debug.assert(buildTable(table, root_bits, lengths, &sorted) == table.len);
+}
+
+/// ``size`` then ``fill`` into a new list, for tests.
+fn buildList(gpa: std.mem.Allocator, list: *std.ArrayList(Code), root_bits: u32, lengths: []const u8) !u32 {
+    const n = size(root_bits, lengths);
+    if (n == 0) return 0;
+    list.clearRetainingCapacity();
+    fill(try list.addManyAsSlice(gpa, n), root_bits, lengths);
+    return n;
+}
+
+/// ``HuffmanTables``: segments that never move, so growing never copies; each doubles the total, up to 256 KiB.
+pub const Tables = struct {
+    segments: std.ArrayList([]Code) = .empty,
+    used: usize = 0,
+    total: usize = 0,
+
+    const segment_entries = 1 << 16;
+
+    pub fn deinit(t: *Tables, gpa: std.mem.Allocator) void {
+        for (t.segments.items) |s| gpa.free(s);
+        t.segments.deinit(gpa);
+    }
+
+    /// ``n`` contiguous entries: the rest of the last segment, else a new one taken from ``budget`` bytes.
+    pub fn take(t: *Tables, gpa: std.mem.Allocator, n: usize, budget: *usize) error{ TooLarge, OutOfMemory }![]Code {
+        if (t.segments.items.len > 0) {
+            const last = t.segments.items[t.segments.items.len - 1];
+            if (last.len - t.used >= n) {
+                defer t.used += n;
+                return last[t.used..][0..n];
+            }
+        }
+        const len = @min(@max(n, @min(t.total, segment_entries)), budget.* / @sizeOf(Code));
+        if (len < n) return error.TooLarge;
+        try t.segments.ensureUnusedCapacity(gpa, 1);
+        const seg = try gpa.alloc(Code, len);
+        budget.* -= len * @sizeOf(Code);
+        t.segments.appendAssumeCapacity(seg);
+        t.total += len;
+        t.used = n;
+        return seg[0..n];
+    }
+};
 
 /// The 7-bit table of the code-length code (lengths 0..7, so it never needs a 2nd level); false for a bad code.
 pub fn buildLengths(lengths: *const [19]u8, out: *[1 << lengths_table_bits]Code) bool {
@@ -263,18 +307,17 @@ test "one-symbol and two-symbol codes" {
     var lens: [5]u8 = .{ 0, 0, 1, 0, 0 };
     var list: std.ArrayList(Code) = .empty;
     defer list.deinit(std.testing.allocator);
-    try std.testing.expectEqual(@as(u32, 256), try build(std.testing.allocator, &list, 8, &lens));
+    try std.testing.expectEqual(@as(u32, 256), try buildList(std.testing.allocator, &list, 8, &lens));
     try std.testing.expectEqual(@as(u16, 2), list.items[17].value);
     try std.testing.expectEqual(@as(u8, 0), list.items[17].bits);
     lens = .{ 1, 0, 0, 0, 1 };
-    list.clearRetainingCapacity();
-    _ = try build(std.testing.allocator, &list, 8, &lens);
+    _ = try buildList(std.testing.allocator, &list, 8, &lens);
     try std.testing.expectEqual(@as(u16, 0), list.items[0].value);
     try std.testing.expectEqual(@as(u16, 4), list.items[1].value);
     lens = .{ 1, 1, 1, 0, 0 }; // over-subscribed
-    try std.testing.expectEqual(@as(u32, 0), try build(std.testing.allocator, null, 8, &lens));
+    try std.testing.expectEqual(@as(u32, 0), size(8, &lens));
     lens = .{ 2, 2, 2, 0, 0 }; // incomplete
-    try std.testing.expectEqual(@as(u32, 0), try build(std.testing.allocator, null, 8, &lens));
+    try std.testing.expectEqual(@as(u32, 0), size(8, &lens));
 }
 
 test "two-level table: 9-bit codes behind the 8-bit root" {
@@ -286,7 +329,7 @@ test "two-level table: 9-bit codes behind the 8-bit root" {
     var list: std.ArrayList(Code) = .empty;
     defer list.deinit(std.testing.allocator);
     // 255 codes of 8 bits + 2 of 9 bits fill the code space exactly
-    try std.testing.expect(try build(std.testing.allocator, &list, 8, &lens) > 256);
+    try std.testing.expect(try buildList(std.testing.allocator, &list, 8, &lens) > 256);
     const data = [_]u8{ 0xff, 0x01, 0, 0, 0, 0, 0, 0, 0, 0 };
     var br = BitReader.init(&data);
     br.fill();
