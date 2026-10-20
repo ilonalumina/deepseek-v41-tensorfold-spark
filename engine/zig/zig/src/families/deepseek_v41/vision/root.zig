@@ -1,7 +1,4 @@
-//! DeepSeek-V4.1's image input, host side (``TF_DSV41_IMAGES=native``; Python: ``vision_prep.py`` and GLM's front
-//! end it imports): image parts and data: URLs, Pillow-exact PNG / JPEG / GIF / BMP / WebP decoding, the processor,
-//! virtual ids, and rank 0's prepared-image cache. The engine side (the tower on rank 0, the image rows, ``bias_vl``,
-//! Engram) reads ``prep.Prepared`` and the ids.
+//! DeepSeek-V4.1's host-side image input (``TF_DSV41_IMAGES=native``, ``vision_prep.py``): decode, process, ids, cache.
 pub const pixels = @import("pixels.zig");
 pub const png = @import("png.zig");
 pub const jpeg = @import("jpeg.zig");

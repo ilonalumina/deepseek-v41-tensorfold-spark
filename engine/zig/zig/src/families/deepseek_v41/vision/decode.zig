@@ -1,6 +1,4 @@
-//! Bytes -> Pillow's RGB (``decode`` + ``to_rgb``): the format from the magic, each format behind ``Decoder``.
-//! PNG, JPEG, GIF (the first frame), BMP and WebP (the first frame) are ported bit for bit; other formats Pillow opens
-//! (TIFF, ...) are refused by name.
+//! Bytes -> Pillow's RGB by magic: PNG, JPEG, BMP and first-frame GIF / WebP bit for bit; other formats are refused.
 const std = @import("std");
 const pixels = @import("pixels.zig");
 const png = @import("png.zig");
