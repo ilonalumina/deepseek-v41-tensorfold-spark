@@ -30,8 +30,8 @@ def chunks_of(data: bytes) -> dict[bytes, bytes]:
     """The top-level chunks of a RIFF WEBP file by tag (the first of each)."""
     out, at = {}, 12
     while at + 8 <= len(data):
-        tag, size = data[at:at + 4], struct.unpack("<I", data[at + 4:at + 8])[0]
-        out.setdefault(tag, data[at + 8:at + 8 + size])
+        tag, size = data[at : at + 4], struct.unpack("<I", data[at + 4 : at + 8])[0]
+        out.setdefault(tag, data[at + 8 : at + 8 + size])
         at += 8 + size + (size & 1)
     return out
 
@@ -105,8 +105,12 @@ def images(full: bool):
         out.append((f"alph-raw-{fname}.webp", riff(vp8x(w, h, 0x10) + chunk(b"ALPH", raw_alph) + chunk(b"VP8 ", vp8))))
         grey = Image.fromarray(np.repeat(d[..., None], 3, axis=2), "RGB")
         ll = chunks_of(pil(grey, lossless=True))[b"VP8L"]
-        out.append((f"alph-ll-{fname}.webp", riff(vp8x(w, h, 0x10) + chunk(b"ALPH", bytes([1 | f << 2]) + ll[5:])
-                                                   + chunk(b"VP8 ", vp8))))
+        out.append(
+            (
+                f"alph-ll-{fname}.webp",
+                riff(vp8x(w, h, 0x10) + chunk(b"ALPH", bytes([1 | f << 2]) + ll[5:]) + chunk(b"VP8 ", vp8)),
+            )
+        )
     out.append(("lossless.webp", pil(rgb, lossless=True)))
     out.append(("lossless-alpha.webp", pil(rgba, lossless=True)))
     clear = field(h, w, 4)
@@ -158,10 +162,17 @@ def variants(files: dict[str, bytes]) -> list[tuple[str, bytes]]:
     cleared[20] &= ~0x10
     out.append(("ok-alpha-flag-clear.webp", bytes(cleared)))
     c = chunks_of(alpha)
-    out.append(("bad-alph-after-vp8.webp", riff(alpha[12:30] + chunk(b"VP8 ", c[b"VP8 "]) + chunk(b"ALPH", c[b"ALPH"]))))
+    out.append(
+        ("bad-alph-after-vp8.webp", riff(alpha[12:30] + chunk(b"VP8 ", c[b"VP8 "]) + chunk(b"ALPH", c[b"ALPH"])))
+    )
     head = anim[12:30]
     out.append(("bad-empty-anim.webp", riff(head + chunk(b"ANIM", b"") + chunk(b"ANMF", chunks_of(anim)[b"ANMF"]))))
-    out.append(("bad-anmf-tail.webp", riff(head + chunk(b"ANIM", b"\0" * 6) + chunk(b"ANMF", chunks_of(anim)[b"ANMF"] + b"junk"))))
+    out.append(
+        (
+            "bad-anmf-tail.webp",
+            riff(head + chunk(b"ANIM", b"\0" * 6) + chunk(b"ANMF", chunks_of(anim)[b"ANMF"] + b"junk")),
+        )
+    )
     out.append(("bad-anmf-empty-last.webp", riff(anim[12:] + chunk(b"ANMF", b"\0" * 16)[:24])))
     return out
 
@@ -183,7 +194,9 @@ def main() -> int:
 
     pillow, libwebp = PIL.__version__, features.version("webp")
     if not pillow.startswith("12.3.") or libwebp != "1.6.0":
-        raise SystemExit(f"the goldens are Pillow 12.3 with libwebp 1.6.0; this is Pillow {pillow} with libwebp {libwebp}")
+        raise SystemExit(
+            f"the goldens are Pillow 12.3 with libwebp 1.6.0; this is Pillow {pillow} with libwebp {libwebp}"
+        )
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
