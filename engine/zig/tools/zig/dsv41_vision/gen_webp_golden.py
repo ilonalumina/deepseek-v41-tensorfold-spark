@@ -59,7 +59,11 @@ def filtered(alpha, f: int):
             elif f == 2:
                 p = a[y - 1, x]
             else:
-                p = a[y - 1, x] if x == 0 else min(255, max(0, a[y, x - 1] + a[y - 1, x] - a[y - 1, x - 1]))
+                p = (
+                    a[y - 1, x]
+                    if x == 0
+                    else min(255, max(0, a[y, x - 1] + a[y - 1, x] - a[y - 1, x - 1]))
+                )
             d[y, x] = (a[y, x] - p) & 255
     return d.astype(np.uint8)
 
@@ -90,9 +94,16 @@ def images(full: bool):
         out.append((f"lossy-q{q}.webp", pil(rgb, quality=q)))
     for m in (0, 6):
         out.append((f"lossy-m{m}.webp", pil(rgb, quality=75, method=m)))
-    out.append(("lossy-flat.webp", pil(Image.new("RGB", (40, 24), (200, 30, 90)), quality=90)))
+    out.append(
+        ("lossy-flat.webp", pil(Image.new("RGB", (40, 24), (200, 30, 90)), quality=90))
+    )
     for sw, sh in ((1, 1), (7, 1), (1, 7), (83, 61), (130, 70)):
-        out.append((f"lossy-{sw}x{sh}.webp", pil(Image.fromarray(field(sh, sw, 3), "RGB"), quality=85)))
+        out.append(
+            (
+                f"lossy-{sw}x{sh}.webp",
+                pil(Image.fromarray(field(sh, sw, 3), "RGB"), quality=85),
+            )
+        )
     out.append(("lossy-alpha.webp", pil(rgba, quality=70)))
     out.append(("lossy-alpha-q50.webp", pil(rgba, quality=70, alpha_quality=50)))
     out.append(("lossy-icc.webp", pil(rgb, quality=80, icc_profile=b"\0" * 7)))
@@ -102,45 +113,116 @@ def images(full: bool):
     for f, fname in enumerate(("none", "h", "v", "g")):
         d = filtered(plane, f)
         raw_alph = bytes([f << 2]) + d.tobytes()
-        out.append((f"alph-raw-{fname}.webp", riff(vp8x(w, h, 0x10) + chunk(b"ALPH", raw_alph) + chunk(b"VP8 ", vp8))))
+        out.append(
+            (
+                f"alph-raw-{fname}.webp",
+                riff(vp8x(w, h, 0x10) + chunk(b"ALPH", raw_alph) + chunk(b"VP8 ", vp8)),
+            )
+        )
         grey = Image.fromarray(np.repeat(d[..., None], 3, axis=2), "RGB")
         ll = chunks_of(pil(grey, lossless=True))[b"VP8L"]
         out.append(
             (
                 f"alph-ll-{fname}.webp",
-                riff(vp8x(w, h, 0x10) + chunk(b"ALPH", bytes([1 | f << 2]) + ll[5:]) + chunk(b"VP8 ", vp8)),
+                riff(
+                    vp8x(w, h, 0x10)
+                    + chunk(b"ALPH", bytes([1 | f << 2]) + ll[5:])
+                    + chunk(b"VP8 ", vp8)
+                ),
             )
         )
     out.append(("lossless.webp", pil(rgb, lossless=True)))
     out.append(("lossless-alpha.webp", pil(rgba, lossless=True)))
     clear = field(h, w, 4)
     clear[::3, :, 3] = 0
-    out.append(("lossless-exact.webp", pil(Image.fromarray(clear, "RGBA"), lossless=True, exact=True)))
+    out.append(
+        (
+            "lossless-exact.webp",
+            pil(Image.fromarray(clear, "RGBA"), lossless=True, exact=True),
+        )
+    )
     for q, m in ((0, 0), (100, 6)):
-        out.append((f"lossless-q{q}-m{m}.webp", pil(rgba, lossless=True, quality=q, method=m)))
+        out.append(
+            (f"lossless-q{q}-m{m}.webp", pil(rgba, lossless=True, quality=q, method=m))
+        )
     for n in (2, 4, 16, 256):
         idx = field(h, w, 1)[..., 0].astype(np.int64) % n
         pal = rng.integers(0, 256, (n, 3)).astype(np.uint8)
-        out.append((f"lossless-pal{n}.webp", pil(Image.fromarray(pal[idx], "RGB"), lossless=True)))
-    out.append(("lossless-1x1.webp", pil(Image.fromarray(field(1, 1, 4), "RGBA"), lossless=True)))
+        out.append(
+            (
+                f"lossless-pal{n}.webp",
+                pil(Image.fromarray(pal[idx], "RGB"), lossless=True),
+            )
+        )
+    out.append(
+        (
+            "lossless-1x1.webp",
+            pil(Image.fromarray(field(1, 1, 4), "RGBA"), lossless=True),
+        )
+    )
     frames = [Image.fromarray(field(h, w, 4), "RGBA") for _ in range(3)]
-    out.append(("anim-lossy.webp", pil(frames[0], save_all=True, append_images=frames[1:], duration=50)))
-    out.append(("anim-lossless.webp", pil(frames[0], save_all=True, append_images=frames[1:], lossless=True)))
+    out.append(
+        (
+            "anim-lossy.webp",
+            pil(frames[0], save_all=True, append_images=frames[1:], duration=50),
+        )
+    )
+    out.append(
+        (
+            "anim-lossless.webp",
+            pil(frames[0], save_all=True, append_images=frames[1:], lossless=True),
+        )
+    )
     # an animation whose first frame covers part of the canvas, at an offset: the rest stays transparent black
-    small = chunks_of(pil(Image.fromarray(field(9, 11, 4), "RGBA"), lossless=True))[b"VP8L"]
-    anmf = le24(2) + le24(1) + le24(10) + le24(8) + le24(100) + b"\0" + chunk(b"VP8L", small)
-    out.append(("anim-offset.webp", riff(vp8x(w, h, 0x12) + chunk(b"ANIM", b"\0" * 6) + chunk(b"ANMF", anmf))))
+    small = chunks_of(pil(Image.fromarray(field(9, 11, 4), "RGBA"), lossless=True))[
+        b"VP8L"
+    ]
+    anmf = (
+        le24(2)
+        + le24(1)
+        + le24(10)
+        + le24(8)
+        + le24(100)
+        + b"\0"
+        + chunk(b"VP8L", small)
+    )
+    out.append(
+        (
+            "anim-offset.webp",
+            riff(vp8x(w, h, 0x12) + chunk(b"ANIM", b"\0" * 6) + chunk(b"ANMF", anmf)),
+        )
+    )
     out += variants(dict(out))
     if not full:
         return out
     big = Image.fromarray(field(1500, 2000, 3), "RGB")
     out.append(("big-lossy.webp", pil(big, quality=85)))
     out.append(("big-lossy-m0.webp", pil(big, quality=30, method=0)))
-    out.append(("big-lossless.webp", pil(Image.fromarray(field(700, 1300, 4), "RGBA"), lossless=True)))
-    out.append(("big-lossy-alpha.webp", pil(Image.fromarray(field(481, 641, 4), "RGBA"), quality=60)))
-    out.append(("tall-lossy.webp", pil(Image.fromarray(field(3000, 199, 3), "RGB"), quality=75)))
+    out.append(
+        (
+            "big-lossless.webp",
+            pil(Image.fromarray(field(700, 1300, 4), "RGBA"), lossless=True),
+        )
+    )
+    out.append(
+        (
+            "big-lossy-alpha.webp",
+            pil(Image.fromarray(field(481, 641, 4), "RGBA"), quality=60),
+        )
+    )
+    out.append(
+        (
+            "tall-lossy.webp",
+            pil(Image.fromarray(field(3000, 199, 3), "RGB"), quality=75),
+        )
+    )
     wide = [Image.fromarray(field(120, 2601, 4), "RGBA") for _ in range(2)]
-    out.append(("wide-anim.webp", pil(wide[0], save_all=True, append_images=wide[1:], lossless=True)))
+    out.append(
+        (
+            "wide-anim.webp",
+            pil(wide[0], save_all=True, append_images=wide[1:], lossless=True),
+        )
+    )
     return out
 
 
@@ -148,11 +230,25 @@ def images(full: bool):
 def variants(files: dict[str, bytes]) -> list[tuple[str, bytes]]:
     """Container variants of committed files: the demuxer's refusals, and a still image whose ALPH the demuxer drops."""
     out = []
-    lossless, alpha, anim = files["lossless.webp"], files["lossy-alpha.webp"], files["anim-lossless.webp"]
+    lossless, alpha, anim = (
+        files["lossless.webp"],
+        files["lossy-alpha.webp"],
+        files["anim-lossless.webp"],
+    )
     out.append(("bad-tail-short.webp", riff(lossless[12:] + b"JUNK")))
-    out.append(("bad-tail-overflow.webp", riff(lossless[12:] + b"JUNK" + struct.pack("<I", 100) + b"xx")))
+    out.append(
+        (
+            "bad-tail-overflow.webp",
+            riff(lossless[12:] + b"JUNK" + struct.pack("<I", 100) + b"xx"),
+        )
+    )
     out.append(("ok-tail-chunk.webp", riff(lossless[12:] + chunk(b"JUNK", b"xyz"))))
-    out.append(("bad-two-images.webp", riff(alpha[12:] + chunk(b"VP8 ", chunks_of(alpha)[b"VP8 "]))))
+    out.append(
+        (
+            "bad-two-images.webp",
+            riff(alpha[12:] + chunk(b"VP8 ", chunks_of(alpha)[b"VP8 "])),
+        )
+    )
     out.append(("bad-two-vp8x.webp", riff(alpha[12:30] + alpha[12:])))
     for bit in (0x01, 0x40, 0x80):
         flipped = bytearray(alpha)
@@ -163,17 +259,33 @@ def variants(files: dict[str, bytes]) -> list[tuple[str, bytes]]:
     out.append(("ok-alpha-flag-clear.webp", bytes(cleared)))
     c = chunks_of(alpha)
     out.append(
-        ("bad-alph-after-vp8.webp", riff(alpha[12:30] + chunk(b"VP8 ", c[b"VP8 "]) + chunk(b"ALPH", c[b"ALPH"])))
+        (
+            "bad-alph-after-vp8.webp",
+            riff(
+                alpha[12:30] + chunk(b"VP8 ", c[b"VP8 "]) + chunk(b"ALPH", c[b"ALPH"])
+            ),
+        )
     )
     head = anim[12:30]
-    out.append(("bad-empty-anim.webp", riff(head + chunk(b"ANIM", b"") + chunk(b"ANMF", chunks_of(anim)[b"ANMF"]))))
+    out.append(
+        (
+            "bad-empty-anim.webp",
+            riff(head + chunk(b"ANIM", b"") + chunk(b"ANMF", chunks_of(anim)[b"ANMF"])),
+        )
+    )
     out.append(
         (
             "bad-anmf-tail.webp",
-            riff(head + chunk(b"ANIM", b"\0" * 6) + chunk(b"ANMF", chunks_of(anim)[b"ANMF"] + b"junk")),
+            riff(
+                head
+                + chunk(b"ANIM", b"\0" * 6)
+                + chunk(b"ANMF", chunks_of(anim)[b"ANMF"] + b"junk")
+            ),
         )
     )
-    out.append(("bad-anmf-empty-last.webp", riff(anim[12:] + chunk(b"ANMF", b"\0" * 16)[:24])))
+    out.append(
+        ("bad-anmf-empty-last.webp", riff(anim[12:] + chunk(b"ANMF", b"\0" * 16)[:24]))
+    )
     return out
 
 
@@ -205,7 +317,9 @@ def main() -> int:
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     with open(out / "golden.jsonl", "w") as g:
-        g.write(json.dumps({"generator": {"pillow": pillow, "libwebp": libwebp}}) + "\n")
+        g.write(
+            json.dumps({"generator": {"pillow": pillow, "libwebp": libwebp}}) + "\n"
+        )
         for name, raw in images(a.full):
             (out / name).write_bytes(raw)
             try:
@@ -215,7 +329,11 @@ def main() -> int:
                 g.write(json.dumps({"name": name, "refused": True}) + "\n")
                 continue
             rgb = to_rgb(img)
-            rec = {"name": name, "size": list(rgb.size), "rgb_sha256": hashlib.sha256(rgb.tobytes()).hexdigest()}
+            rec = {
+                "name": name,
+                "size": list(rgb.size),
+                "rgb_sha256": hashlib.sha256(rgb.tobytes()).hexdigest(),
+            }
             g.write(json.dumps(rec) + "\n")
     print(f"wrote {out}/golden.jsonl", flush=True)
     return 0
